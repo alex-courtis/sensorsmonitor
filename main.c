@@ -6,8 +6,13 @@
 
 #include <sensors/sensors.h>
 #include <sensors/error.h>
+#include <sys/stat.h>
+#include <signal.h>
+#include <fcntl.h>
 
 #define WATCH_MAX 8
+
+#define PIPE "/home/alex/piping"
 
 typedef struct watch {
     const sensors_chip_name *chip;
@@ -15,14 +20,29 @@ typedef struct watch {
     const char *label;
 } watch;
 
-int main() {
-    watch **watching = malloc(sizeof(watch*) * WATCH_MAX);
-    int watchingCount = 0;
-    int err;
+void cleanup() {
+    printf("removing %s\n", PIPE);
+    int rc = remove(PIPE);
+    if (rc) {
+        printf("failed to remove %s with rc=%i\n", PIPE, rc);
+        exit(1);
+    }
+}
 
-    err = sensors_init(NULL);
-    if (err) {
-        fprintf(stderr, "sensors_init: %s\n", sensors_strerror(err));
+void signalHandler(int signum) {
+    printf("caught signal %i\n", signum);
+    cleanup();
+    exit(0);
+}
+
+int main() {
+    watch **watching = malloc(sizeof(watch *) * WATCH_MAX);
+    int watchingCount = 0;
+    int rc;
+
+    rc = sensors_init(NULL);
+    if (rc) {
+        fprintf(stderr, "sensors_init: %s\n", sensors_strerror(rc));
         exit(1);
     }
 
@@ -56,9 +76,9 @@ int main() {
             double val;
             while ((sub = sensors_get_all_subfeatures(chip, feature, &b))) {
                 if (sub->flags & SENSORS_MODE_R) {
-                    if ((err = sensors_get_value(chip, sub->number, &val))) {
+                    if ((rc = sensors_get_value(chip, sub->number, &val))) {
                         fprintf(stderr, "ERROR: Can't get value of subfeature %s: %s\n", sub->name,
-                                sensors_strerror(err));
+                                sensors_strerror(rc));
                         exit(1);
                     }
                     printf("        %s=%f\n", sub->name, val);
@@ -76,18 +96,46 @@ int main() {
     }
     printf("\n");
 
+//    signal(SIGINT | SIGTERM, signalHandler);
+
     if (watching) {
+        struct stat bleh;
+        rc = stat(PIPE, &bleh);
+        if (rc == 0 && S_ISFIFO(bleh.st_mode)) {
+            // use the existing pipe
+            printf("found existing pipe %s\n", PIPE);
+        } else {
+            if (rc == 0) {
+                cleanup();
+            }
+            rc = mkfifo(PIPE, 0644);
+            printf("mkfifo %s rc=%i\n", PIPE, rc);
+        }
+
         const watch *w;
+        char buf[1024];
         while (true) {
+            int pd;
+            // open write only; will block until a reader comes along
+            if ((pd = open(PIPE, O_WRONLY)) < 0) {
+                fprintf(stderr, "failed to open %s for write, exiting", PIPE);
+                exit(1);
+            }
+
             for (int i = 0; i < watchingCount; i++) {
                 w = watching[i];
                 double val;
-                if ((err = sensors_get_value(w->chip, w->sub->number, &val))) {
-                    fprintf(stderr, "ERROR: Can't get value of subfeature %s: %s\n", w->sub->name, sensors_strerror(err));
+                if ((rc = sensors_get_value(w->chip, w->sub->number, &val))) {
+                    fprintf(stderr, "ERROR: Can't get value of subfeature %s: %s\n", w->sub->name,
+                            sensors_strerror(rc));
                     exit(1);
                 }
-                printf("%s %s=%f\n", w->chip->prefix, w->label, val);
+                sprintf(buf, "%s:%s=%.0f ", w->chip->prefix, w->label, val + 0.5);
+                printf("%s\n", buf);
+                write(pd, buf, strlen(buf) * sizeof(char));
             }
+            write(pd, "\n", sizeof(char));
+            close(pd);
             printf("\n");
 
             sleep(5);
