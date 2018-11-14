@@ -132,12 +132,12 @@ const Stats* collect() {
         // only interested in known chips
         if (strcmp(chip_name->prefix, PREFIX_AMDGPU) == 0) {
             amdgpu = &(stats.amdgpus[stats.numAmdgpus++]);
-            if (stats.numAmdgpus >= MAX_AMDGPUS) {
+            if (stats.numAmdgpus > MAX_AMDGPUS) {
                 continue;
             }
         } else if (strcmp(chip_name->prefix, PREFIX_K10_TEMP) == 0) {
             k10temp = &(stats.k10temps[stats.numk10temps++]);
-            if (stats.numk10temps >= MAX_K10_TEMPS) {
+            if (stats.numk10temps > MAX_K10_TEMPS) {
                 continue;
             }
         } else {
