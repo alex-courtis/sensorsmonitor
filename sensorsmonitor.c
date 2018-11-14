@@ -29,11 +29,9 @@ typedef struct {
     double powerAverage;
 } Amdgpu;
 
-#define LABEL_TCTL "Tctl"
 #define LABEL_TDIE "Tdie"
 typedef struct {
-    double tctl;
-    double tdie;
+    double tdie; // only Tdie is correct; Tctl is offset by +27 and exists only for legacy purposes
 } K10temp;
 
 #define MAX_AMDGPUS 4
@@ -183,9 +181,7 @@ const Stats* collect() {
                 } else if (k10temp) {
                     switch (subfeature->type) {
                         case SENSORS_SUBFEATURE_TEMP_INPUT:
-                            if (strcmp(label, LABEL_TCTL) == 0) {
-                                k10temp->tctl = value;
-                            } else if (strcmp(label, LABEL_TDIE) == 0) {
+                            if (strcmp(label, LABEL_TDIE) == 0) {
                                 k10temp->tdie = value;
                             }
                         default:
@@ -225,14 +221,11 @@ const char *render(const Stats *stats) {
 
         if (stats->numk10temps > 0) {
             double tdie = 0.5;
-            double tctl = 0.5;
             for (int i = 0; i < stats->numk10temps; i++) {
                 tdie += stats->k10temps[i].tdie;
-                tctl += stats->k10temps[i].tctl;
             }
             tdie /= stats->numk10temps;
-            tctl /= stats->numk10temps;
-            bufPtr += sprintf(bufPtr, "%s%s %i°C   %s %i°C", bufPtr == buf ? "" : "   ", LABEL_TDIE, (int) tdie, LABEL_TCTL, (int) tctl);
+            bufPtr += sprintf(bufPtr, "%s%s %i°C", bufPtr == buf ? "" : "   ", LABEL_TDIE, (int) tdie);
         }
     }
 
