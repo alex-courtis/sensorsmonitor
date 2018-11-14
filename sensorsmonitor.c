@@ -6,19 +6,56 @@
 #include <stdbool.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sensors/sensors.h>
+#include <sensors/error.h>
 
 #define EXIT_NO_XDG_RUNTIME_DIR 2
 #define EXIT_FAIL_DELETE_EXISTING_PIPE 3
 #define EXIT_FAIL_CREATE_EXISTING_PIPE 4
 #define EXIT_FAIL_OPEN_PIPE_FOR_WRITING 5
+#define EXIT_FAIL_SENSORS_INIT 6
+#define EXIT_FAIL_SENSORS_GET_LABEL 7
+#define EXIT_FAIL_SENSORS_GET_VALUE 8
 
 #define PIPE_NAME "sensorsmonitor"
+
 #define POLLING_INTERVAL_SEC 5
 
-// if fail, print the message to stderr and exit
+#define PREFIX_K10_TEMP "k10temp"
+#define PREFIX_AMDGPU "amdgpu"
+
+typedef struct {
+    double tempInput;
+    double powerAverage;
+} Amdgpu;
+
+#define LABEL_TCTL "Tctl"
+#define LABEL_TDIE "Tdie"
+typedef struct {
+    double tctl;
+    double tdie;
+} K10temp;
+
+#define MAX_AMDGPUS 4
+#define MAX_K10_TEMPS 4
+typedef struct {
+    Amdgpu amdgpus[MAX_AMDGPUS];
+    int numAmdgpus;
+    K10temp k10temps[MAX_K10_TEMPS];
+    int numk10temps;
+} Stats;
+
+// if fail, print the message to stderr, with errno appended and exit
 #define CHECK_AND_EXIT(fail, exitCode, format, ...) \
 if (fail) { \
     fprintf(stderr, format"; errno=%i, exiting %i\n", __VA_ARGS__, errno, exitCode); \
+    exit(exitCode); \
+}
+
+// if rc != 0, print the message to stderr, with sensors_strerror(rc) appended and exit
+#define CHECK_AND_EXIT_SENSORS(rc, exitCode, format, ...) \
+if (rc != 0) { \
+    fprintf(stderr, format"; '%s', exiting %i\n", __VA_ARGS__, sensors_strerror(rc), exitCode); \
     exit(exitCode); \
 }
 
@@ -28,7 +65,10 @@ char *initPipe() {
 
     // read the environment variable
     const char *xdgRuntimeDir = getenv("XDG_RUNTIME_DIR");
-    CHECK_AND_EXIT(xdgRuntimeDir == NULL, EXIT_NO_XDG_RUNTIME_DIR, "%s not set", "$XDG_RUNTIME_DIR")
+    CHECK_AND_EXIT(
+            xdgRuntimeDir == NULL,
+            EXIT_NO_XDG_RUNTIME_DIR, "%s not set", "$XDG_RUNTIME_DIR"
+    )
 
     // create the path
     char *pipePath = malloc(sizeof(char) * (strlen(xdgRuntimeDir) + strlen(PIPE_NAME) + 2));
@@ -44,42 +84,172 @@ char *initPipe() {
             return pipePath;
         } else {
             // clean whatever it is
-            CHECK_AND_EXIT(remove(pipePath) != 0, EXIT_FAIL_DELETE_EXISTING_PIPE, "failed to remove unexpected file '%s'", pipePath)
+            CHECK_AND_EXIT(
+                    remove(pipePath) != 0,
+                    EXIT_FAIL_DELETE_EXISTING_PIPE, "failed to remove unexpected file '%s'", pipePath
+            )
         }
     }
 
     // create the pipe
-    CHECK_AND_EXIT(mkfifo(pipePath, 0644), EXIT_FAIL_CREATE_EXISTING_PIPE, "failed to create named pipe '%s'", pipePath)
+    CHECK_AND_EXIT(
+            mkfifo(pipePath, 0644),
+            EXIT_FAIL_CREATE_EXISTING_PIPE, "failed to create named pipe '%s'", pipePath
+    )
 
     return pipePath;
 }
 
-void discover() {
+// discover and collect interesting sensor stats
+Stats collect() {
+    const char *label;
+    double value;
+    Amdgpu *amdgpu;
+    K10temp *k10temp;
 
+    Stats stats = {.numAmdgpus = 0, .numk10temps = 0};
+
+    // init; clean up is done at end
+    CHECK_AND_EXIT_SENSORS(
+            sensors_init(NULL),
+            EXIT_FAIL_SENSORS_INIT, "failed %s", "sensors_init"
+    )
+
+    // iterate chips
+    const sensors_chip_name *chip;
+    int chip_nr = 0;
+    while ((chip = sensors_get_detected_chips(NULL, &chip_nr))) {
+        amdgpu = NULL;
+        k10temp = NULL;
+
+        // only interested in known chips
+        if (strcmp(chip->prefix, PREFIX_AMDGPU) == 0) {
+            amdgpu = &(stats.amdgpus[stats.numAmdgpus++]);
+            if (stats.numAmdgpus >= MAX_AMDGPUS) {
+                continue;
+            }
+        } else if (strcmp(chip->prefix, PREFIX_K10_TEMP) == 0) {
+            k10temp = &(stats.k10temps[stats.numk10temps++]);
+            if (stats.numk10temps >= MAX_K10_TEMPS) {
+                continue;
+            }
+        } else {
+            continue;
+        }
+
+        // iterate features
+        const sensors_feature *feature;
+        int feature_nr = 0;
+        while ((feature = sensors_get_features(chip, &feature_nr))) {
+
+            // iterate readable sub-features
+            const sensors_subfeature *sub;
+            int subfeature_nr = 0;
+            while ((sub = sensors_get_all_subfeatures(chip, feature, &subfeature_nr))) {
+                if (!(sub->flags & SENSORS_MODE_R)) {
+                    continue;
+                }
+                // read the label and value
+                CHECK_AND_EXIT_SENSORS(
+                        (label = sensors_get_label(chip, feature)) == NULL,
+                        EXIT_FAIL_SENSORS_GET_LABEL, "failed sensors_get_value for '%s:%s'", chip->prefix, sub->name
+                )
+                CHECK_AND_EXIT_SENSORS(
+                        sensors_get_value(chip, sub->number, &value) != 0,
+                        EXIT_FAIL_SENSORS_GET_VALUE, "failed sensors_get_value for '%s:%s'", chip->prefix, sub->name
+                )
+
+                if (amdgpu) {
+                    switch (sub->type) {
+                        case SENSORS_SUBFEATURE_TEMP_INPUT:
+                            amdgpu->tempInput = value;
+                            break;
+                        case SENSORS_SUBFEATURE_POWER_AVERAGE:
+                            amdgpu->powerAverage = value;
+                            break;
+                        default:
+                            break;
+                    }
+                } else if (k10temp) {
+                    switch (sub->type) {
+                        case SENSORS_SUBFEATURE_TEMP_INPUT:
+                            if (strcmp(label, LABEL_TCTL) == 0) {
+                                k10temp->tctl = value;
+                            } else if (strcmp(label, LABEL_TDIE) == 0) {
+                                k10temp->tdie = value;
+                            }
+                        default:
+                            break;
+                    }
+                }
+            }
+        }
+    }
+
+    // promises not to error
+    sensors_cleanup();
+
+    return stats;
 }
 
-void collect(const int pd) {
+// render average stats as a string
+// static buffer is returned, do not free
+const char *render(const Stats stats) {
+    static char buf[128];
+    char *bufPtr = buf;
 
-    char buf[100];
-    sprintf(buf, "blarg\n");
-    write(pd, buf, strlen(buf) * sizeof(char));
+    if (stats.numAmdgpus > 0) {
+        double tempInput = 0.5;
+        double powerAverage = 0.5;
+        for (int i = 0; i < stats.numAmdgpus; i++) {
+            tempInput += stats.amdgpus[i].tempInput;
+            powerAverage += stats.amdgpus[i].powerAverage;
+        }
+        tempInput /= stats.numAmdgpus;
+        powerAverage /= stats.numAmdgpus;
+        bufPtr += sprintf(bufPtr, "amdgpu %iC %iW", (int) tempInput, (int) powerAverage);
+    }
+
+    if (stats.numk10temps > 0) {
+        double tdie = 0.5;
+        double tctl = 0.5;
+        for (int i = 0; i < stats.numk10temps; i++) {
+            tdie += stats.k10temps[i].tdie;
+            tctl += stats.k10temps[i].tctl;
+        }
+        tdie /= stats.numk10temps;
+        tctl /= stats.numk10temps;
+        bufPtr += sprintf(bufPtr, "%s%s %iC   %s %iC", bufPtr == buf ? "" : "   ", LABEL_TDIE, (int) tdie, LABEL_TCTL, (int) tctl);
+    }
+
+    sprintf(bufPtr, "\n");
+
+    return buf;
 }
 
 int main() {
-    int pd;
 
-    discover();
+    // collect once, to detect issues
+    collect();
 
     // create the pipe
     const char *pipePath = initPipe();
 
-    while(true) {
+    while (true) {
 
         // open pipe write only; will block until a reader comes along
-        CHECK_AND_EXIT((pd = open(pipePath, O_WRONLY)) == -1, EXIT_FAIL_OPEN_PIPE_FOR_WRITING, "failed to open %s for write, exiting", pipePath)
+        const int pd = open(pipePath, O_WRONLY);
+        CHECK_AND_EXIT(pd == -1,
+                       EXIT_FAIL_OPEN_PIPE_FOR_WRITING, "failed to open %s for write, exiting", pipePath)
 
-        // output data
-        collect(pd);
+        // collect
+        const Stats stats = collect();
+
+        // render
+        const char *rendered = render(stats);
+
+        // write
+        write(pd, rendered, strlen(rendered) * sizeof(char));
 
         // close pipe
         close(pd);
