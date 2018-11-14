@@ -101,13 +101,23 @@ char *initPipe() {
 }
 
 // discover and collect interesting sensor stats
-Stats collect() {
-    const char *label;
-    double value;
-    Amdgpu *amdgpu;
-    K10temp *k10temp;
+// pointer to static is returned; do not free
+const Stats* collect() {
+    static Stats stats;
 
-    Stats stats = {.numAmdgpus = 0, .numk10temps = 0};
+    static const sensors_chip_name *chip_name;
+    static int chip_nr;
+    static const sensors_feature *feature;
+    static int feature_nr;
+    static const sensors_subfeature *subfeature;
+    static int subfeature_nr;
+    static const char *label;
+    static double value;
+    static Amdgpu *amdgpu;
+    static K10temp *k10temp;
+
+    stats.numAmdgpus = 0;
+    stats.numk10temps = 0;
 
     // init; clean up is done at end
     CHECK_AND_EXIT_SENSORS(
@@ -116,19 +126,18 @@ Stats collect() {
     )
 
     // iterate chips
-    const sensors_chip_name *chip;
-    int chip_nr = 0;
-    while ((chip = sensors_get_detected_chips(NULL, &chip_nr))) {
+    chip_nr = 0;
+    while ((chip_name = sensors_get_detected_chips(NULL, &chip_nr))) {
         amdgpu = NULL;
         k10temp = NULL;
 
         // only interested in known chips
-        if (strcmp(chip->prefix, PREFIX_AMDGPU) == 0) {
+        if (strcmp(chip_name->prefix, PREFIX_AMDGPU) == 0) {
             amdgpu = &(stats.amdgpus[stats.numAmdgpus++]);
             if (stats.numAmdgpus >= MAX_AMDGPUS) {
                 continue;
             }
-        } else if (strcmp(chip->prefix, PREFIX_K10_TEMP) == 0) {
+        } else if (strcmp(chip_name->prefix, PREFIX_K10_TEMP) == 0) {
             k10temp = &(stats.k10temps[stats.numk10temps++]);
             if (stats.numk10temps >= MAX_K10_TEMPS) {
                 continue;
@@ -138,29 +147,30 @@ Stats collect() {
         }
 
         // iterate features
-        const sensors_feature *feature;
-        int feature_nr = 0;
-        while ((feature = sensors_get_features(chip, &feature_nr))) {
+        feature_nr = 0;
+        while ((feature = sensors_get_features(chip_name, &feature_nr))) {
+
+            // read the label
+            CHECK_AND_EXIT_SENSORS(
+                    (label = sensors_get_label(chip_name, feature)) == NULL,
+                    EXIT_FAIL_SENSORS_GET_LABEL, "failed sensors_get_label for '%s:%s'", chip_name->prefix, feature->name
+            )
 
             // iterate readable sub-features
-            const sensors_subfeature *sub;
-            int subfeature_nr = 0;
-            while ((sub = sensors_get_all_subfeatures(chip, feature, &subfeature_nr))) {
-                if (!(sub->flags & SENSORS_MODE_R)) {
+            subfeature_nr = 0;
+            while ((subfeature = sensors_get_all_subfeatures(chip_name, feature, &subfeature_nr))) {
+                if (!(subfeature->flags & SENSORS_MODE_R)) {
                     continue;
                 }
-                // read the label and value
+
+                // read the value
                 CHECK_AND_EXIT_SENSORS(
-                        (label = sensors_get_label(chip, feature)) == NULL,
-                        EXIT_FAIL_SENSORS_GET_LABEL, "failed sensors_get_value for '%s:%s'", chip->prefix, sub->name
-                )
-                CHECK_AND_EXIT_SENSORS(
-                        sensors_get_value(chip, sub->number, &value) != 0,
-                        EXIT_FAIL_SENSORS_GET_VALUE, "failed sensors_get_value for '%s:%s'", chip->prefix, sub->name
+                        sensors_get_value(chip_name, subfeature->number, &value) != 0,
+                        EXIT_FAIL_SENSORS_GET_VALUE, "failed sensors_get_value for '%s:%s'", chip_name->prefix, subfeature->name
                 )
 
                 if (amdgpu) {
-                    switch (sub->type) {
+                    switch (subfeature->type) {
                         case SENSORS_SUBFEATURE_TEMP_INPUT:
                             amdgpu->tempInput = value;
                             break;
@@ -171,7 +181,7 @@ Stats collect() {
                             break;
                     }
                 } else if (k10temp) {
-                    switch (sub->type) {
+                    switch (subfeature->type) {
                         case SENSORS_SUBFEATURE_TEMP_INPUT:
                             if (strcmp(label, LABEL_TCTL) == 0) {
                                 k10temp->tctl = value;
@@ -189,37 +199,40 @@ Stats collect() {
     // promises not to error
     sensors_cleanup();
 
-    return stats;
+    return &stats;
 }
 
-// render average stats as a string
+// render average stats as a string with a trailing newline
 // static buffer is returned, do not free
-const char *render(const Stats stats) {
+const char *render(const Stats *stats) {
     static char buf[128];
-    char *bufPtr = buf;
+    static char *bufPtr;
 
-    if (stats.numAmdgpus > 0) {
-        double tempInput = 0.5;
-        double powerAverage = 0.5;
-        for (int i = 0; i < stats.numAmdgpus; i++) {
-            tempInput += stats.amdgpus[i].tempInput;
-            powerAverage += stats.amdgpus[i].powerAverage;
+    bufPtr = buf;
+    if (stats) {
+        if (stats->numAmdgpus > 0) {
+            double tempInput = 0.5;
+            double powerAverage = 0.5;
+            for (int i = 0; i < stats->numAmdgpus; i++) {
+                tempInput += stats->amdgpus[i].tempInput;
+                powerAverage += stats->amdgpus[i].powerAverage;
+            }
+            tempInput /= stats->numAmdgpus;
+            powerAverage /= stats->numAmdgpus;
+            bufPtr += sprintf(bufPtr, "amdgpu %iC %iW", (int) tempInput, (int) powerAverage);
         }
-        tempInput /= stats.numAmdgpus;
-        powerAverage /= stats.numAmdgpus;
-        bufPtr += sprintf(bufPtr, "amdgpu %iC %iW", (int) tempInput, (int) powerAverage);
-    }
 
-    if (stats.numk10temps > 0) {
-        double tdie = 0.5;
-        double tctl = 0.5;
-        for (int i = 0; i < stats.numk10temps; i++) {
-            tdie += stats.k10temps[i].tdie;
-            tctl += stats.k10temps[i].tctl;
+        if (stats->numk10temps > 0) {
+            double tdie = 0.5;
+            double tctl = 0.5;
+            for (int i = 0; i < stats->numk10temps; i++) {
+                tdie += stats->k10temps[i].tdie;
+                tctl += stats->k10temps[i].tctl;
+            }
+            tdie /= stats->numk10temps;
+            tctl /= stats->numk10temps;
+            bufPtr += sprintf(bufPtr, "%s%s %iC   %s %iC", bufPtr == buf ? "" : "   ", LABEL_TDIE, (int) tdie, LABEL_TCTL, (int) tctl);
         }
-        tdie /= stats.numk10temps;
-        tctl /= stats.numk10temps;
-        bufPtr += sprintf(bufPtr, "%s%s %iC   %s %iC", bufPtr == buf ? "" : "   ", LABEL_TDIE, (int) tdie, LABEL_TCTL, (int) tctl);
     }
 
     sprintf(bufPtr, "\n");
@@ -243,7 +256,7 @@ int main() {
                        EXIT_FAIL_OPEN_PIPE_FOR_WRITING, "failed to open %s for write, exiting", pipePath)
 
         // collect
-        const Stats stats = collect();
+        const Stats *stats = collect();
 
         // render
         const char *rendered = render(stats);
