@@ -3,7 +3,7 @@
 Periodically writes interesting lm_sensor averages to named pipe `$XDG_RUNTIME_DIR/sensorsmonitor` e.g.
 
 ```
-amdgpu 26C 4W   Tdie 28C   Tctl 55C
+amdgpu 26°C 4W   Tdie 28°C   Tctl 55°C
 ```
 
 I show this on my xmobar.

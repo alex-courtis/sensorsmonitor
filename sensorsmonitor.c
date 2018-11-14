@@ -205,7 +205,8 @@ const Stats* collect() {
 // render average stats as a string with a trailing newline
 // static buffer is returned, do not free
 const char *render(const Stats *stats) {
-    static char buf[128];
+    static char buf[128]; // ensure that this is large enough for all the sprintfs with maxints
+
     static char *bufPtr;
 
     bufPtr = buf;
@@ -219,7 +220,7 @@ const char *render(const Stats *stats) {
             }
             tempInput /= stats->numAmdgpus;
             powerAverage /= stats->numAmdgpus;
-            bufPtr += sprintf(bufPtr, "amdgpu %iC %iW", (int) tempInput, (int) powerAverage);
+            bufPtr += sprintf(bufPtr, "amdgpu %i°C %iW", (int) tempInput, (int) powerAverage);
         }
 
         if (stats->numk10temps > 0) {
@@ -231,7 +232,7 @@ const char *render(const Stats *stats) {
             }
             tdie /= stats->numk10temps;
             tctl /= stats->numk10temps;
-            bufPtr += sprintf(bufPtr, "%s%s %iC   %s %iC", bufPtr == buf ? "" : "   ", LABEL_TDIE, (int) tdie, LABEL_TCTL, (int) tctl);
+            bufPtr += sprintf(bufPtr, "%s%s %i°C   %s %i°C", bufPtr == buf ? "" : "   ", LABEL_TDIE, (int) tdie, LABEL_TCTL, (int) tctl);
         }
     }
 
