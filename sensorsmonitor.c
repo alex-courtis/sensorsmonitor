@@ -125,28 +125,28 @@ const Stats* collect() {
 
     // iterate chips
     chip_nr = 0;
-    while ((chip_name = sensors_get_detected_chips(NULL, &chip_nr))) {
+    while (chip_name = sensors_get_detected_chips(NULL, &chip_nr)) {
         amdgpu = NULL;
         k10temp = NULL;
 
         // only interested in known chips
         if (strcmp(chip_name->prefix, PREFIX_AMDGPU) == 0) {
+            if (stats.numAmdgpus >= MAX_AMDGPUS) {
+                continue;
+            }
             amdgpu = &(stats.amdgpus[stats.numAmdgpus++]);
-            if (stats.numAmdgpus > MAX_AMDGPUS) {
-                continue;
-            }
         } else if (strcmp(chip_name->prefix, PREFIX_K10_TEMP) == 0) {
-            k10temp = &(stats.k10temps[stats.numk10temps++]);
-            if (stats.numk10temps > MAX_K10_TEMPS) {
+            if (stats.numk10temps >= MAX_K10_TEMPS) {
                 continue;
             }
+            k10temp = &(stats.k10temps[stats.numk10temps++]);
         } else {
             continue;
         }
 
         // iterate features
         feature_nr = 0;
-        while ((feature = sensors_get_features(chip_name, &feature_nr))) {
+        while (feature = sensors_get_features(chip_name, &feature_nr)) {
 
             // read the label
             CHECK_AND_EXIT_SENSORS(
@@ -156,7 +156,7 @@ const Stats* collect() {
 
             // iterate readable sub-features
             subfeature_nr = 0;
-            while ((subfeature = sensors_get_all_subfeatures(chip_name, feature, &subfeature_nr))) {
+            while (subfeature = sensors_get_all_subfeatures(chip_name, feature, &subfeature_nr)) {
                 if (!(subfeature->flags & SENSORS_MODE_R)) {
                     continue;
                 }
