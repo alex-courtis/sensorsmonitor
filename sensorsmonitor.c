@@ -208,24 +208,27 @@ const char *render(const Stats *stats) {
     bufPtr = buf;
     if (stats) {
         if (stats->numAmdgpus > 0) {
-            double tempInput = 0.5;
-            double powerAverage = 0.5;
+            double maxTempInput = 0;
+            double maxPowerAverage = 0;
             for (int i = 0; i < stats->numAmdgpus; i++) {
-                tempInput += stats->amdgpus[i].tempInput;
-                powerAverage += stats->amdgpus[i].powerAverage;
+                if (stats->amdgpus[i].tempInput > maxTempInput) {
+                    maxTempInput = stats->amdgpus[i].tempInput;
+                }
+                if (stats->amdgpus[i].powerAverage > maxPowerAverage) {
+                    maxPowerAverage = stats->amdgpus[i].powerAverage;
+                }
             }
-            tempInput /= stats->numAmdgpus;
-            powerAverage /= stats->numAmdgpus;
-            bufPtr += sprintf(bufPtr, "amdgpu %i°C %iW", (int) tempInput, (int) powerAverage);
+            bufPtr += sprintf(bufPtr, "amdgpu %i°C %iW", (int)(maxTempInput + 0.5), (int)(maxPowerAverage + 0.5));
         }
 
         if (stats->numk10temps > 0) {
-            double tdie = 0.5;
+            double maxTdie = 0;
             for (int i = 0; i < stats->numk10temps; i++) {
-                tdie += stats->k10temps[i].tdie;
+                if (stats->k10temps[i].tdie > maxTdie) {
+                    maxTdie = stats->k10temps[i].tdie;
+                }
             }
-            tdie /= stats->numk10temps;
-            bufPtr += sprintf(bufPtr, "%s%s %i°C", bufPtr == buf ? "" : "   ", LABEL_TDIE, (int) tdie);
+            bufPtr += sprintf(bufPtr, "%s%s %i°C", bufPtr == buf ? "" : "   ", LABEL_TDIE, (int)(maxTdie + 0.5));
         }
     }
 
