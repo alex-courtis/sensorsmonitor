@@ -161,19 +161,19 @@ const Stats* collect() {
                     continue;
                 }
 
-                // read the value
-                CHECK_AND_EXIT_SENSORS(
-                        sensors_get_value(chip_name, subfeature->number, &value) != 0,
-                        EXIT_FAIL_SENSORS_GET_VALUE, "failed sensors_get_value for '%s:%s'", chip_name->prefix, subfeature->name
-                )
-
                 if (amdgpu) {
                     switch (subfeature->type) {
                         case SENSORS_SUBFEATURE_TEMP_INPUT:
-                            amdgpu->tempInput = value;
+                            CHECK_AND_EXIT_SENSORS(
+                                    sensors_get_value(chip_name, subfeature->number, &amdgpu->tempInput) != 0,
+                                    EXIT_FAIL_SENSORS_GET_VALUE, "failed sensors_get_value for '%s:%s'", chip_name->prefix, subfeature->name
+                            )
                             break;
                         case SENSORS_SUBFEATURE_POWER_AVERAGE:
-                            amdgpu->powerAverage = value;
+                            CHECK_AND_EXIT_SENSORS(
+                                    sensors_get_value(chip_name, subfeature->number, &amdgpu->powerAverage) != 0,
+                                    EXIT_FAIL_SENSORS_GET_VALUE, "failed sensors_get_value for '%s:%s'", chip_name->prefix, subfeature->name
+                            )
                             break;
                         default:
                             break;
@@ -182,8 +182,12 @@ const Stats* collect() {
                     switch (subfeature->type) {
                         case SENSORS_SUBFEATURE_TEMP_INPUT:
                             if (strcmp(label, LABEL_TDIE) == 0) {
-                                k10temp->tdie = value;
+                                CHECK_AND_EXIT_SENSORS(
+                                        sensors_get_value(chip_name, subfeature->number, &k10temp->tdie) != 0,
+                                        EXIT_FAIL_SENSORS_GET_VALUE, "failed sensors_get_value for '%s:%s'", chip_name->prefix, subfeature->name
+                                )
                             }
+                            break;
                         default:
                             break;
                     }
